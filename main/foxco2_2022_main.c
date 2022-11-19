@@ -2,14 +2,15 @@
  */
 #include <stdio.h>
 #include "sdkconfig.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_system.h"
-#include "esp_log.h"
-#include "driver/gpio.h"
-#include "driver/i2c.h"
-#include "scd30.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <esp_system.h>
+#include <esp_log.h>
+#include <driver/gpio.h>
+#include <driver/i2c.h>
 #include <soc/i2c_reg.h>
+#include "scd30.h"
+#include "network.h"
 
 void i2cport_init(void)
 {
@@ -44,13 +45,20 @@ void app_main(void)
 {
     i2cport_init();
     scd30_init(55);
+    network_prepare();
+    network_on(); /* We just stay connected */
+    /* Wait for up to 5 seconds to connect to WiFi and get an IP */
+    xEventGroupWaitBits(network_event_group, NETWORK_CONNECTED_BIT,
+                        pdFALSE, pdFALSE,
+                        (5000 / portTICK_PERIOD_MS));
     while (1) {
         ESP_LOGI("main.c", "Reading CO2 sensor...");
         struct scd30data d;
         scd30_read(&d);
-        ESP_LOGI("main.c", "Read values: CO2 raw 0x%x = %.1f ppm; temp raw 0x%x = %.1f deg; hum raw = 0x%x = %.1f%%",
-                           d.co2raw, d.co2, d.tempraw, d.temp, d.humraw, d.hum);
+        ESP_LOGI("main.c", "Read values: valid = %d; CO2 raw 0x%x = %.0f ppm; temp raw 0x%x = %.2f deg; hum raw = 0x%x = %.2f%%",
+                           d.valid, d.co2raw, d.co2, d.tempraw, d.temp, d.humraw, d.hum);
         fflush(stdout);
+        /* FIXME send data somewhere */
         vTaskDelay(20 * (1000 / portTICK_PERIOD_MS));
     }
 }
