@@ -4,7 +4,7 @@
 #include "scd30.h"
 #include "sdkconfig.h"
 #include <string.h>
-
+#include <math.h>
 
 #define SCD30ADDR 0x61
 
@@ -126,7 +126,15 @@ void scd30_read(struct scd30data * d)
     memcpy(&(d->co2), &(d->co2raw), 4);
     memcpy(&(d->temp), &(d->tempraw), 4);
     memcpy(&(d->hum), &(d->humraw), 4);
-    /* Mark the result as valid. */
+    /* Some sanity checks. */
+    if (isnan(d->co2)) return;
+    if (isnan(d->temp)) return;
+    if (isnan(d->hum)) return;
+    if (d->co2 < 100.0) return; /* That cannot be valid */
+    if ((d->hum < -1.0) || (d->hum > 101.0)) { /* That cannot be valid */
+      return;
+    }
+    /* All sanity checks passed. Mark the result as valid. */
     d->valid = 1;
 }
 
