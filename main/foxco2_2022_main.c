@@ -1,7 +1,7 @@
 /* Foxis CO2 sensor firmware, 2022 edition.
  */
-#include <stdio.h>
 #include "sdkconfig.h"
+#include <stdio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_system.h>
@@ -9,8 +9,16 @@
 #include <driver/gpio.h>
 #include <driver/i2c.h>
 #include <soc/i2c_reg.h>
-#include "scd30.h"
+#include <time.h>
+#include <esp_sntp.h>
 #include "network.h"
+#include "scd30.h"
+#include "webserver.h"
+
+float lastco2 = -999;
+float lasttemp = -999.99;
+float lasthum = -999.9;
+time_t lastvaluets = 0;
 
 void i2cport_init(void)
 {
@@ -51,15 +59,30 @@ void app_main(void)
     xEventGroupWaitBits(network_event_group, NETWORK_CONNECTED_BIT,
                         pdFALSE, pdFALSE,
                         (5000 / portTICK_PERIOD_MS));
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "ntp2.fau.de");
+    sntp_setservername(1, "ntp3.fau.de");
+    sntp_init();
+    webserver_start();
+    time_t lastread = time(NULL);
     while (1) {
+      time_t curts = time(NULL);
+      if (((curts - lastread) >= 60) || (lastread > curts)) {
+        lastread = curts;
         ESP_LOGI("main.c", "Reading CO2 sensor...");
         struct scd30data d;
         scd30_read(&d);
         ESP_LOGI("main.c", "Read values: valid = %d; CO2 raw 0x%x = %.0f ppm; temp raw 0x%x = %.2f deg; hum raw = 0x%x = %.2f%%",
                            d.valid, d.co2raw, d.co2, d.tempraw, d.temp, d.humraw, d.hum);
         fflush(stdout);
-        /* FIXME send data somewhere */
-        vTaskDelay(20 * (1000 / portTICK_PERIOD_MS));
+        if (d.valid) { /* Update our global variables, so the webserver can export them */
+          lastco2 = d.co2;
+          lasttemp = d.temp;
+          lasthum = d.hum;
+          lastvaluets = time(NULL);
+        }
+      }
+      vTaskDelay(20 * (1000 / portTICK_PERIOD_MS));
     }
 }
 
