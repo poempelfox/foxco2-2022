@@ -2,7 +2,12 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <time.h>
+#include <esp_ota_ops.h>
+#include <esp_http_client.h>
+#include <esp_https_ota.h>
+#include <esp_crt_bundle.h>
 #include "webserver.h"
+#include "secrets.h"
 
 /* These are in foxco2_2022_main.c */
 extern float lastco2;
@@ -63,8 +68,24 @@ var myrefresher = setInterval(updatethings, 30000);
 </script>
 <br>For querying this data in scripts, you can use
  <a href="/json">the JSON output under /json</a>.
-</body></html>
+<h3>Firmware-Update:</h3>
+Current firmware version:
 )EOSP2";
+
+static const char startp_p3[] = R"EOSP3(
+<br><form action="/firmwareupdate" method="POST">
+URL:
+<input type="text" name="updateurl" value="https://www.poempelfox.de/espfw/foxco2-2022.bin">
+Admin-Password:
+<input type="text" name="updatepw">
+<input type="submit" name="su" value="Flash Update">
+</form>
+</body></html>
+)EOSP3";
+
+/********************************************************
+ * End of embedded webpages definition                  *
+ ********************************************************/
 
 esp_err_t get_startpage_handler(httpd_req_t * req) {
   char myresponse[sizeof(startp_p1) + sizeof(startp_p2) + 1000];
@@ -75,7 +96,12 @@ esp_err_t get_startpage_handler(httpd_req_t * req) {
   pfp += sprintf(pfp, "<tr><th>CO2 (ppm)</th><td id=\"co2\">%.0f</td></tr>", lastco2);
   pfp += sprintf(pfp, "<tr><th>Temperature (C)</th><td id=\"temp\">%.2f</td></tr>", lasttemp);
   pfp += sprintf(pfp, "<tr><th>Humidity (%%)</th><td id=\"hum\">%.1f</td></tr></table>", lasthum);
+  const esp_app_desc_t * appd = esp_ota_get_app_description();
   strcat(myresponse, startp_p2);
+  pfp = myresponse + strlen(myresponse);
+  pfp += sprintf(pfp, "%s version %s compiled %s %s",
+                 appd->project_name, appd->version, appd->date, appd->time);
+  strcat(myresponse, startp_p3);
   /* The following two lines are the default und thus redundant. */
   httpd_resp_set_status(req, "200 OK");
   httpd_resp_set_type(req, "text/html");
@@ -85,10 +111,10 @@ esp_err_t get_startpage_handler(httpd_req_t * req) {
 }
 
 static httpd_uri_t uri_startpage = {
-    .uri      = "/",
-    .method   = HTTP_GET,
-    .handler  = get_startpage_handler,
-    .user_ctx = NULL
+  .uri      = "/",
+  .method   = HTTP_GET,
+  .handler  = get_startpage_handler,
+  .user_ctx = NULL
 };
 
 esp_err_t get_json_handler(httpd_req_t * req) {
@@ -109,28 +135,123 @@ esp_err_t get_json_handler(httpd_req_t * req) {
 }
 
 static httpd_uri_t uri_json = {
-    .uri      = "/json",
-    .method   = HTTP_GET,
-    .handler  = get_json_handler,
-    .user_ctx = NULL
+  .uri      = "/json",
+  .method   = HTTP_GET,
+  .handler  = get_json_handler,
+  .user_ctx = NULL
+};
+
+/* Unescapes a x-www-form-urlencoded string.
+ * Modifies the string inplace! */
+void unescapeuestring(char * s) {
+  char * rp = s;
+  char * wp = s;
+  while (*rp != 0) {
+    if (strncmp(rp, "&amp;", 5) == 0) {
+      *wp = '&'; rp += 5; wp += 1;
+    } else if (strncmp(rp, "%26", 3) == 0) {
+      *wp = '&'; rp += 3; wp += 1;
+    } else if (strncmp(rp, "%3A", 3) == 0) {
+      *wp = ':'; rp += 3; wp += 1;
+    } else if (strncmp(rp, "%2F", 3) == 0) {
+      *wp = '/'; rp += 3; wp += 1;
+    } else {
+      *wp = *rp; wp++; rp++;
+    }
+  }
+  *wp = 0;
+}
+
+esp_err_t post_fwup(httpd_req_t * req) {
+  char postcontent[600];
+  char myresponse[1000];
+  char tmp1[600];
+  //ESP_LOGI("webserver.c", "POST request with length: %d", req->content_len);
+  if (req->content_len >= sizeof(postcontent)) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    strcpy(myresponse, "Sorry, your request was too large. Try a shorter update URL?");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  int ret = httpd_req_recv(req, postcontent, req->content_len);
+  if (ret < req->content_len) {
+    httpd_resp_set_status(req, "500 Internal Server Error");
+    strcpy(myresponse, "Your request was incompletely received.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  postcontent[req->content_len] = 0;
+  ESP_LOGI("webserver.c", "Received data: '%s'", postcontent);
+  if (httpd_query_key_value(postcontent, "updatepw", tmp1, sizeof(tmp1)) != ESP_OK) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    strcpy(myresponse, "No updatepw submitted.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  unescapeuestring(tmp1);
+  ESP_LOGI("webserver.c", "UE AdminPW: '%s'", tmp1);
+  if (strcmp(tmp1, FCO2_ADMINPW) != 0) {
+    httpd_resp_set_status(req, "403 Forbidden");
+    strcpy(myresponse, "Admin-Password incorrect.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  if (httpd_query_key_value(postcontent, "updateurl", tmp1, sizeof(tmp1)) != ESP_OK) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    strcpy(myresponse, "No updateurl submitted.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  unescapeuestring(tmp1);
+  ESP_LOGI("webserver.c", "UE UpdateURL: '%s'", tmp1);
+  sprintf(myresponse, "OK, will try to update from: %s'", tmp1);
+  esp_http_client_config_t httpccfg = {
+      .url = tmp1,
+      .timeout_ms = 60000,
+      .keep_alive_enable = true,
+      .crt_bundle_attach = esp_crt_bundle_attach
+  };
+  ret = esp_https_ota(&httpccfg);
+  if (ret == ESP_OK) {
+    ESP_LOGI("webserver.c", "OTA Succeed, Rebooting...");
+    strcat(myresponse, "OTA Update reported success. Will reboot.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    vTaskDelay(3 * (1000 / portTICK_PERIOD_MS)); 
+    esp_restart();
+  } else {
+    ESP_LOGE("webserver.c", "Firmware upgrade failed");
+    strcat(myresponse, "OTA Update reported failure.");
+    httpd_resp_send(req, myresponse, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  /* This should not be reached. */
+  return ESP_OK;
+}
+
+static httpd_uri_t uri_fwup = {
+  .uri      = "/firmwareupdate",
+  .method   = HTTP_POST,
+  .handler  = post_fwup,
+  .user_ctx = NULL
 };
 
 void webserver_start(void) {
-    httpd_handle_t server = NULL;
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    /* Documentation is - as usual - a bit patchy, but I assume
-     * the following drops the oldest connection if the ESP runs
-     * out of connections. */
-    config.lru_purge_enable = true;
-    config.server_port = 80;
-    /* The default is undocumented, but seems to be only 4k. */
-    config.stack_size = 10000;
-    ESP_LOGI("webserver.c", "Starting webserver on port %d", config.server_port);
-    if (httpd_start(&server, &config) != ESP_OK) {
-      ESP_LOGE("webserver.c", "Failed to start HTTP server.");
-      return;
-    }
-    httpd_register_uri_handler(server, &uri_startpage);
-    httpd_register_uri_handler(server, &uri_json);
+  httpd_handle_t server = NULL;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  /* Documentation is - as usual - a bit patchy, but I assume
+   * the following drops the oldest connection if the ESP runs
+   * out of connections. */
+  config.lru_purge_enable = true;
+  config.server_port = 80;
+  /* The default is undocumented, but seems to be only 4k. */
+  config.stack_size = 10000;
+  ESP_LOGI("webserver.c", "Starting webserver on port %d", config.server_port);
+  if (httpd_start(&server, &config) != ESP_OK) {
+    ESP_LOGE("webserver.c", "Failed to start HTTP server.");
+    return;
+  }
+  httpd_register_uri_handler(server, &uri_startpage);
+  httpd_register_uri_handler(server, &uri_json);
+  httpd_register_uri_handler(server, &uri_fwup);
 }
 

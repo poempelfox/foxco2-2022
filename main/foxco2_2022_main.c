@@ -11,6 +11,8 @@
 #include <soc/i2c_reg.h>
 #include <time.h>
 #include <esp_sntp.h>
+#include <nvs_flash.h>
+#include <esp_ota_ops.h>
 #include "network.h"
 #include "scd30.h"
 #include "webserver.h"
@@ -51,14 +53,40 @@ void i2cport_init(void)
 
 void app_main(void)
 {
+    /* This is in all OTA-Update examples, so I consider it mandatory. */
+    esp_err_t err = nvs_flash_init();
+    if ((err == ESP_ERR_NVS_NO_FREE_PAGES) || (err == ESP_ERR_NVS_NEW_VERSION_FOUND)) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
+
     i2cport_init();
     scd30_init(55);
     network_prepare();
     network_on(); /* We just stay connected */
-    /* Wait for up to 5 seconds to connect to WiFi and get an IP */
-    xEventGroupWaitBits(network_event_group, NETWORK_CONNECTED_BIT,
-                        pdFALSE, pdFALSE,
-                        (5000 / portTICK_PERIOD_MS));
+    /* Wait for up to 7 seconds to connect to WiFi and get an IP */
+    EventBits_t eb = xEventGroupWaitBits(network_event_group,
+                                         NETWORK_CONNECTED_BIT,
+                                         pdFALSE, pdFALSE,
+                                         (7000 / portTICK_PERIOD_MS));
+    if ((eb & NETWORK_CONNECTED_BIT) == NETWORK_CONNECTED_BIT) {
+      ESP_LOGI("main.c", "Successfully connected to network.");
+      /* In case we were OTA-updating, we mark this image as good now. */
+      const esp_partition_t *running = esp_ota_get_running_partition();
+      esp_ota_img_states_t ota_state;
+      if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+          if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+            ESP_LOGI("main.c", "OTA-Update: App marked as good.");
+          } else {
+            ESP_LOGE("main.c", "OTA-Update: Failed to cancel rollback");
+          }
+        }
+      }
+    } else {
+      ESP_LOGW("main.c", "Warning: Could not connect to WiFi. This is probably not good.");
+    }
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_setservername(0, "ntp2.fau.de");
     sntp_setservername(1, "ntp3.fau.de");
