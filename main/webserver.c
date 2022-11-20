@@ -11,13 +11,58 @@ extern float lasthum;
 extern time_t lastvaluets;
 
 static const char startp_p1[] = R"EOSP1(
+<!DOCTYPE html>
+
 <html><head><title>FoxCO2-2022</title>
-<!-- FIXME Javascript for updates -->
+<style type="text/css">
+body { background-color:#000000;color:#cccccc; }
+table, th, td { border:1px solid #aaaaff;border-collapse:collapse;padding:5px; }
+th { text-align:left; }
+td { text-align:right; }
+a:link, a:visited, a:hover { color:#ccccff; }
+</style>
 </head><body>
 <h1>FoxCO2-2022</h1>
+<noscript>Because you have JavaScript disabled, this cannot
+ automatically update, you'll have to reload the page.<br></noscript>
 )EOSP1";
 
 static const char startp_p2[] = R"EOSP2(
+<script type="text/javascript">
+var getJSON = function(url, callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'json';
+    xhr.onload = function() {
+      var status = xhr.status;
+      if (status === 200) {
+        callback(null, xhr.response);
+      } else {
+        callback(status, xhr.response);
+      }
+    };
+    xhr.send();
+};
+function updrcvd(err, data) {
+  if (err != null) {
+    document.getElementById("ts").innerHTML = "---";
+    document.getElementById("co2").innerHTML = "----";
+    document.getElementById("temp").innerHTML = "--.--";
+    document.getElementById("hum").innerHTML = "--.-";
+  } else {
+    document.getElementById("ts").innerHTML = data.ts;
+    document.getElementById("co2").innerHTML = data.co2;
+    document.getElementById("temp").innerHTML = data.temp;
+    document.getElementById("hum").innerHTML = data.hum;
+  }
+}
+function updatethings() {
+  getJSON('/json', updrcvd);
+}
+var myrefresher = setInterval(updatethings, 30000);
+</script>
+<br>For querying this data in scripts, you can use
+ <a href="/json">the JSON output under /json</a>.
 </body></html>
 )EOSP2";
 
@@ -78,7 +123,8 @@ void webserver_start(void) {
      * out of connections. */
     config.lru_purge_enable = true;
     config.server_port = 80;
-
+    /* The default is undocumented, but seems to be only 4k. */
+    config.stack_size = 10000;
     ESP_LOGI("webserver.c", "Starting webserver on port %d", config.server_port);
     if (httpd_start(&server, &config) != ESP_OK) {
       ESP_LOGE("webserver.c", "Failed to start HTTP server.");
