@@ -30,6 +30,7 @@ a:link, a:visited, a:hover { color:#ccccff; }
 <h1>FoxCO2-2022</h1>
 <noscript>Because you have JavaScript disabled, this cannot
  automatically update, you'll have to reload the page.<br></noscript>
+<h2>Currently measured values:</h2>
 )EOSP1";
 
 static const char startp_p2[] = R"EOSP2(
@@ -68,18 +69,19 @@ var myrefresher = setInterval(updatethings, 30000);
 </script>
 <br>For querying this data in scripts, you can use
  <a href="/json">the JSON output under /json</a>.
-<h3>Firmware-Update:</h3>
+<h2>Firmware-Update:</h2>
 Current firmware version:
 )EOSP2";
 
 static const char startp_p3[] = R"EOSP3(
 <br><form action="/firmwareupdate" method="POST">
-URL:
+Update from URL:
 <input type="text" name="updateurl" value="https://www.poempelfox.de/espfw/foxco2-2022.bin">
 Admin-Password:
 <input type="text" name="updatepw">
 <input type="submit" name="su" value="Flash Update">
 </form>
+Be very patient after clicking "Flash Update", this will take about 30 seconds before anything happens.
 </body></html>
 )EOSP3";
 
@@ -93,9 +95,15 @@ esp_err_t get_startpage_handler(httpd_req_t * req) {
   strcpy(myresponse, startp_p1);
   pfp = myresponse + strlen(startp_p1);
   pfp += sprintf(pfp, "<table><tr><th>UpdateTS</th><td id=\"ts\">%ld</td></tr>", lastvaluets);
-  pfp += sprintf(pfp, "<tr><th>CO2 (ppm)</th><td id=\"co2\">%.0f</td></tr>", lastco2);
-  pfp += sprintf(pfp, "<tr><th>Temperature (C)</th><td id=\"temp\">%.2f</td></tr>", lasttemp);
-  pfp += sprintf(pfp, "<tr><th>Humidity (%%)</th><td id=\"hum\">%.1f</td></tr></table>", lasthum);
+  if ((lastco2 < 0) || ((time(NULL) - lastvaluets) > 300)) {
+    pfp += sprintf(pfp, "<tr><th>CO2 (ppm)</th><td id=\"co2\">----</td></tr>");
+    pfp += sprintf(pfp, "<tr><th>Temperature (C)</th><td id=\"temp\">--.--</td></tr>");
+    pfp += sprintf(pfp, "<tr><th>Humidity (%%)</th><td id=\"hum\">--.-</td></tr></table>");
+  } else {
+    pfp += sprintf(pfp, "<tr><th>CO2 (ppm)</th><td id=\"co2\">%.0f</td></tr>", lastco2);
+    pfp += sprintf(pfp, "<tr><th>Temperature (C)</th><td id=\"temp\">%.2f</td></tr>", lasttemp);
+    pfp += sprintf(pfp, "<tr><th>Humidity (%%)</th><td id=\"hum\">%.1f</td></tr></table>", lasthum);
+  }
   const esp_app_desc_t * appd = esp_ota_get_app_description();
   strcat(myresponse, startp_p2);
   pfp = myresponse + strlen(myresponse);
@@ -123,9 +131,15 @@ esp_err_t get_json_handler(httpd_req_t * req) {
   strcpy(myresponse, "");
   pfp = myresponse;
   pfp += sprintf(pfp, "{\"ts\":%ld,", lastvaluets);
-  pfp += sprintf(pfp, "\"co2\":\"%.0f\",", lastco2);
-  pfp += sprintf(pfp, "\"temp\":\"%.2f\",", lasttemp);
-  pfp += sprintf(pfp, "\"hum\":\"%.1f\"}", lasthum);
+  if ((lastco2 < 0) || ((time(NULL) - lastvaluets) > 300)) {
+    pfp += sprintf(pfp, "\"co2\":\"----\",");
+    pfp += sprintf(pfp, "\"temp\":\"--.--\",");
+    pfp += sprintf(pfp, "\"hum\":\"--.-\"}");
+  } else {
+    pfp += sprintf(pfp, "\"co2\":\"%.0f\",", lastco2);
+    pfp += sprintf(pfp, "\"temp\":\"%.2f\",", lasttemp);
+    pfp += sprintf(pfp, "\"hum\":\"%.1f\"}", lasthum);
+  }
   /* The following line is the default und thus redundant. */
   httpd_resp_set_status(req, "200 OK");
   httpd_resp_set_type(req, "application/json");
